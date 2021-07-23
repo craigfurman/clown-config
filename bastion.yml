@@ -232,6 +232,130 @@ Resources:
         Count: 1
         Timeout: PT5M
 
+  BastionHost2:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum:
+              awslogs: []
+              google-authenticator: []
+
+          files:
+            "/etc/cfn/cfn-hup.conf":
+              mode: "000444"
+              owner: root
+              group: root
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              mode: "000444"
+              owner: root
+              group: root
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.BastionHost.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource BastionHost --region ${AWS::Region}
+
+            "/etc/awslogs/awslogs.conf":
+              mode: "000444"
+              owner: root
+              group: root
+              content: !Sub |
+                [general]
+                use_gzip_http_content_encoding = true
+                state_file = /var/lib/awslogs/agent-state
+                [/var/log/secure]
+                file = /var/log/secure
+                log_group_name = ${BastionSecureLogGroup}
+                log_stream_name = log
+                datetime_format = %b %d %H:%M:%S
+
+            "/etc/awslogs/awscli.conf":
+              mode: "000444"
+              owner: root
+              group: root
+              content: !Sub |
+                [plugins]
+                cwlogs = cwlogs
+                [default]
+                region = ${AWS::Region}
+
+            "/etc/profile.d/init_google_authenticator.sh":
+              owner: root
+              group: root
+              content: !Sub |
+                #!/bin/bash -xe
+                if [ "${MFA}" == "true" ] && [ ! -e ~/.google_authenticator ]  &&  [ $USER != "root" ]; then
+                  echo -e "Initializing google-authenticator\n"
+                  google-authenticator --time-based --disallow-reuse --force --rate-limit=3 --rate-time=30 --window-size=3
+                  echo -e "Save the generated emergency scratch codes and use secret key or scan the QR code to register your device for multi-factor authentication.\n"
+                  echo -e "Login again using your ssh key pair and the generated one-time password on your registered device.\n"
+                  logout
+                fi
+
+            "/usr/local/sbin/configure_mfa.sh":
+              mode: "000550"
+              owner: root
+              group: root
+              content: !Sub |
+                #!/bin/bash -xe
+                if [ "${MFA}" == "true" ]; then
+                  echo "auth       required     pam_google_authenticator.so nullok" >> /etc/pam.d/sshd
+                  sed -e '/auth       substack     password-auth/ s/^#*/#/' -i /etc/pam.d/sshd
+                  sed -e '/ChallengeResponseAuthentication no/ s/^#*/#/' -i /etc/ssh/sshd_config
+                  sed -e '/#ChallengeResponseAuthentication yes/s/^#//' -i /etc/ssh/sshd_config
+                  echo >> /etc/ssh/sshd_config
+                  echo "AuthenticationMethods publickey,keyboard-interactive" >> /etc/ssh/sshd_config
+                  service sshd restart
+                fi
+                rm -f /usr/local/sbin/configure_mfa.sh
+
+          commands:
+            configure-mfa:
+              command: /usr/local/sbin/configure_mfa.sh
+
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: true
+                ensureRunning: true
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+              awslogs:
+                enabled: true
+                ensureRunning: true
+                files: /etc/awslogs/awslogs.conf
+
+    Properties:
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref BastionNetworkInterface
+          DeviceIndex: 0
+      ImageId: !FindInMap [ AMIMap, !Ref "AWS::Region", AMI ]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum update -y
+          /opt/aws/bin/cfn-init -v -s ${AWS::StackId} --resource BastionHost --region ${AWS::Region}
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource BastionHost --region ${AWS::Region}
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      Tags:
+        - Key: Name
+          Value: startup-kit-bastion
+    DependsOn: BastionEipAssociation
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT5M
+
   BastionEip:
     Type: AWS::EC2::EIP
     Properties:
@@ -336,5 +460,3 @@ Outputs:
     Value: !GetAtt BastionEip.AllocationId
     Export:
       Name: !Sub "${AWS::StackName}-BastionEIP-AllocationId"
-
-
