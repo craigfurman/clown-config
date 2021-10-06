@@ -1,0 +1,10 @@
+# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.
+version: v1.22.1
+# ignores vulnerabilities until expiry date; change duration by modifying expiry date
+ignore:
+  SNYK-CC-TF-138:
+    - 'aws_api_gateway_stage_logging.tf > resource > aws_api_gateway_stage[denied] > access_log_settings':
+        reason: CFG-1046-from-dot-snyk
+        expires: 2021-11-05T14:41:31.673Z
+        created: 2021-10-06T14:41:31.674Z
+patch: {}
